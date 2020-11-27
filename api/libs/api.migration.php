@@ -210,6 +210,7 @@ class mikbill {
         'Тумир-170' => 'Tumyr_170',
         'Тумир-200' => 'Tumyr_200',
     );
+    protected $macDictTmp = array();
 
     public function __construct() {
         $this->greed = new Avarice();
@@ -227,6 +228,7 @@ class mikbill {
         $this->phonePoint = $this->beggar['INF']['phone'];
         $this->mobilePoint = $this->beggar['INF']['mobile'];
         $this->addressPoint = $this->beggar['INF']['address'];
+        $this->parseMacDictTmp();
 
         $this->dbLoader = new simpleOverlay();
         ini_set('max_execution_time', 1800);
@@ -321,10 +323,13 @@ class mikbill {
     }
 
     protected function get_netid($user_arr, $your_networks) {
+
+
         $net_id = array();
         foreach ($user_arr as $each_user => $io) {
             $ip = $io[$this->beggar['INF']['ip']];
             $id = $io[$this->beggar['INF']['id']];
+
             $usr_split = explode(".", $ip);
             if (isset($usr_split[1])) {
                 $ip = $usr_split[0] . '.' . $usr_split[1] . '.' . $usr_split[2];
@@ -336,6 +341,19 @@ class mikbill {
             }
         }
         return($net_id);
+    }
+
+    protected function parseMacDictTmp() {
+        $data = file_get_contents("/opt/2.txt");
+        $lines = explode("\n", $data);
+        foreach ($lines as $eachLine) {
+            $lineParts = explode(",", $eachLine);
+            if (isset($lineParts[3]) and trim($lineParts[3] != 'NULL')) {
+                $login = trim($lineParts[0]);
+                $mac = trim($lineParts[3]);
+                $this->macDictTmp[$login] = $mac;
+            }
+        }
     }
 
     protected function get_lastcityid() {
@@ -388,11 +406,16 @@ class mikbill {
         return $result;
     }
 
-    protected function cidr_match($ip, $network, $cidr) {
-        if ((ip2int($ip) & ~((1 << (32 - $cidr)) - 1) ) == ip2int($network)) {
-            return true;
+    protected function cidr_match($ip, $range) {
+        list ($subnet, $bits) = explode('/', $range);
+        if ($bits === null) {
+            $bits = 32;
         }
-        return false;
+        $ip = ip2long($ip);
+        $subnet = ip2long($subnet);
+        $mask = -1 << (32 - $bits);
+        $subnet &= $mask;
+        return ($ip & $mask) == $subnet;
     }
 
     protected function loadDbData($db_host, $db_user, $db_pass, $db_name) {
@@ -407,7 +430,7 @@ class mikbill {
         $city = "SELECT * FROM `lanes_settlements`";
         $street = "SELECT * FROM `lanes`";
         $houses = "SELECT * FROM `lanes_houses`";
-        $nets = "(SELECT DISTINCT SUBSTRING_INDEX(`local_ip`,'.',3) AS `net` FROM `users`) UNION (SELECT DISTINCT SUBSTRING_INDEX(`framed_ip`,'.',3) AS `net` FROM `users`)";
+        $nets = "(SELECT DISTINCT CONCAT(SUBSTRING_INDEX(`local_ip`,'.',3),'.0/24') AS `net`, CONCAT(SUBSTRING_INDEX(`local_ip`,'.',3),'.0') AS `start_ip`, CONCAT(SUBSTRING_INDEX(`local_ip`,'.',3),'.254') AS `last_ip` FROM `users` WHERE `local_ip` NOT LIKE '192.168%' AND `local_ip` NOT LIKE '10.%' AND `local_ip` NOT LIKE '172.16.%' AND `local_ip` <> '') UNION (SELECT DISTINCT CONCAT(SUBSTRING_INDEX(`framed_ip`,'.',3),'.0/24') AS `net`, CONCAT(SUBSTRING_INDEX(`framed_ip`,'.',3),'.0') AS `start_ip`, CONCAT(SUBSTRING_INDEX(`framed_ip`,'.',3),'.254') AS `last_ip` FROM `users` WHERE `framed_ip` NOT LIKE '192.168%' AND `framed_ip` NOT LIKE '10.%' AND `framed_ip` NOT LIKE '172.16.%' AND `framed_ip` <> '')";
 
 //sql data
         $this->usersData = $this->dbLoader->simple_queryall($users);
@@ -418,6 +441,8 @@ class mikbill {
         $this->streetData = $this->dbLoader->simple_queryall($street);
         $this->housesData = $this->dbLoader->simple_queryall($houses);
         $this->netsData = $this->dbLoader->simple_queryall($nets);
+        $this->netsData[] = array('net' => '100.64.0.0/19', 'start_ip' => '100.64.0.0', 'last_ip' => '100.64.31.254');
+        $this->netsData[] = array('net' => '100.64.32.0/19', 'start_ip' => '100.64.32.0', 'last_ip' => '100.64.63.254');
         $this->dbLoader->close($db_link);
 
         if (!($db_config = @parse_ini_file('config/' . 'mysql.ini'))) {
@@ -454,6 +479,7 @@ class mikbill {
         $new_house_data = array();
         $allIP = array();
         $duplicateIP = array();
+        $grey_ip = ip2long('100.64.0.1');
 
         $net_counts = count($this->netsData);
 
@@ -464,7 +490,8 @@ class mikbill {
             if ($io['real_ip']) {
                 $eachIp = $io['framed_ip'];
             } else {
-                $eachIp = $io['local_ip'];
+                $eachIp = long2ip($grey_ip);
+                $grey_ip++;
             }
 
             if (!isset($allIP[$eachIp])) {
@@ -473,7 +500,12 @@ class mikbill {
                 $user_arr[$this->fixedLogin][$this->gridPoint] = $io[$this->beggar['DAT']['grid']];  //2
 
                 $user_arr[$this->fixedLogin][$this->ipPoint] = $eachIp; //3
-                $user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                //$user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                if (isset($this->macDictTmp[$this->fixedLogin])) {
+                    $user_arr[$this->fixedLogin][$this->macPoint] = $this->macDictTmp[$this->fixedLogin];
+                } else {
+                    $user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                }
                 $user_arr[$this->fixedLogin][$this->cashPoint] = $io[$this->beggar['DAT']['cash']]; //5
                 $user_arr[$this->fixedLogin][$this->downPoint] = $io[$this->beggar['DAT']['down']]; //6                        
                 $user_arr[$this->fixedLogin][$this->realnamePoint] = $this->fixEncode($io[$this->beggar['DAT']['realname']]);  //7
@@ -507,14 +539,21 @@ class mikbill {
             if ($io['real_ip']) {
                 $eachIp = $io['framed_ip'];
             } else {
-                $eachIp = $io['local_ip'];
+                $eachIp = long2ip($grey_ip);
+                $grey_ip++;
             }
+
             if (!isset($allIP[$eachIp])) {
                 $user_arr[$this->fixedLogin][$this->loginPoint] = $this->fixedLogin; //0
                 $user_arr[$this->fixedLogin][$this->passwordPoint] = $io[$this->beggar['DAT']['password']]; //1
                 $user_arr[$this->fixedLogin][$this->gridPoint] = $io[$this->beggar['DAT']['grid']];  //2
                 $user_arr[$this->fixedLogin][$this->ipPoint] = $eachIp; //3
-                $user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                //$user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                if (isset($this->macDictTmp[$this->fixedLogin])) {
+                    $user_arr[$this->fixedLogin][$this->macPoint] = $this->macDictTmp[$this->fixedLogin];
+                } else {
+                    $user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                }
                 $user_arr[$this->fixedLogin][$this->cashPoint] = $io[$this->beggar['DAT']['cash']]; //5
                 $user_arr[$this->fixedLogin][$this->downPoint] = 1; //6
                 $user_arr[$this->fixedLogin][$this->realnamePoint] = $this->fixEncode($io[$this->beggar['DAT']['realname']]);  //7
@@ -548,7 +587,8 @@ class mikbill {
             if ($io['real_ip']) {
                 $eachIp = $io['framed_ip'];
             } else {
-                $eachIp = $io['local_ip'];
+                $eachIp = long2ip($grey_ip);
+                $grey_ip++;
             }
 
             if (!isset($allIP[$eachIp])) {
@@ -556,7 +596,12 @@ class mikbill {
                 $user_arr[$this->fixedLogin][$this->passwordPoint] = $io[$this->beggar['DAT']['password']]; //1
                 $user_arr[$this->fixedLogin][$this->gridPoint] = $io[$this->beggar['DAT']['grid']];  //2
                 $user_arr[$this->fixedLogin][$this->ipPoint] = $eachIp; //3
-                $user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                //$user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                if (isset($this->macDictTmp[$this->fixedLogin])) {
+                    $user_arr[$this->fixedLogin][$this->macPoint] = $this->macDictTmp[$this->fixedLogin];
+                } else {
+                    $user_arr[$this->fixedLogin][$this->macPoint] = $io[$this->beggar['DAT']['mac']]; //4
+                }
                 $user_arr[$this->fixedLogin][$this->cashPoint] = $io[$this->beggar['DAT']['cash']]; //5
                 $user_arr[$this->fixedLogin][$this->downPoint] = $io[$this->beggar['DAT']['down']]; //6
                 $user_arr[$this->fixedLogin][$this->realnamePoint] = $this->fixEncode($io[$this->beggar['DAT']['realname']]);  //7
@@ -592,23 +637,29 @@ class mikbill {
 //creating table users
         fpc_start($this->beggar['DUMP'], "users");
         foreach ($user_arr as $eachUser => $io) {
-            $login = $io[$this->loginPoint];
-            if ($login_as_pass) {
-                $password = $io[$this->loginPoint];
+            if (isset($io[$this->tariffPoint])) {
+                $login = $io[$this->loginPoint];
+                if ($login_as_pass) {
+                    $password = $io[$this->loginPoint];
+                } else {
+                    $password = $io[$this->passwordPoint];
+                }
+                $ip = $io[$this->ipPoint];
+                $cash = $io[$this->cashPoint];
+                $down = $io[$this->downPoint];
+                $tariff = $io[$this->tariffPoint];
+                $credit = $io['credit'];
+                $freeze = $io['freeze'];
+                if ($i < ($user_count - 1)) {
+                    file_put_contents($this->beggar['DUMP'], "('" . $login . "','" . $password . "',$freeze,$down,1,1,'" . $tariff . "','','','','','',''," . $credit . ", '', '', '', '', '', '', '', '', '', '', '', 0, '" . $ip . "', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, $cash, 0, 0, 0, 86400, 1441152420, ''), \n", FILE_APPEND);
+                    $i++;
+                } else {
+                    file_put_contents($this->beggar['DUMP'], "('" . $login . "', '" . $password . "', $freeze, $down, 1, 1, '" . $tariff . "', '', '', '', '', '', '', " . $credit . ", '', '', '', '', '', '', '', '', '', '', '', 0, '" . $ip . "', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, $cash, 0, 0, 0, 86400, 1441152420, '');\n", FILE_APPEND);
+                }
             } else {
-                $password = $io[$this->passwordPoint];
-            }
-            $ip = $io[$this->ipPoint];
-            $cash = $io[$this->cashPoint];
-            $down = $io[$this->downPoint];
-            $tariff = $io[$this->tariffPoint];
-            $credit = $io['credit'];
-            $freeze = $io['freeze'];
-            if ($i < ($user_count - 1)) {
-                file_put_contents($this->beggar['DUMP'], "('" . $login . "','" . $password . "',$freeze,$down,1,1,'" . $tariff . "','','','','','',''," . $credit . ", '', '', '', '', '', '', '', '', '', '', '', 0, '" . $ip . "', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, $cash, 0, 0, 0, 86400, 1441152420, ''), \n", FILE_APPEND);
-                $i++;
-            } else {
-                file_put_contents($this->beggar['DUMP'], "('" . $login . "', '" . $password . "', $freeze, $down, 1, 1, '" . $tariff . "', '', '', '', '', '', '', " . $credit . ", '', '', '', '', '', '', '', '', '', '', '', 0, '" . $ip . "', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, $cash, 0, 0, 0, 86400, 1441152420, '');\n", FILE_APPEND);
+                $duplicateIP[$io[$this->loginPoint]] = $allIP[$io[$this->ipPoint]];
+                unset($user_arr[$eachUser]);
+                $user_count--;
             }
         }
         fpc_end($this->beggar['DUMP'], "users");
@@ -655,46 +706,45 @@ class mikbill {
         $i = $this->initIncrement();
         $j = $this->initIncrement();
         fpc_start($this->beggar['DUMP'], "networks");
-        //foreach ($your_networks as $each_net => $io) {
+        //foreach ($your_networks as $each_net => $io) {       
         foreach ($this->netsData as $each_net => $io) {
-
-            $start_ip = $io['net'] . '.0';
-            $last_ip = $io['net'] . '.254';
-            $net = $io['net'] . '.0/24';
             $net_type = 'dhcpstatic';
             $radius = 0;
             $j += $this->beggar['UDATA'];
             if ($i < ($net_counts - 1)) {
-                file_put_contents($this->beggar['DUMP'], "($j, '" . $start_ip . "', '" . $last_ip . "', '" . $net . "', '" . $net_type . "', $radius),\n", FILE_APPEND);
+                file_put_contents($this->beggar['DUMP'], "($j, '" . $io['start_ip'] . "', '" . $io['last_ip'] . "', '" . $io['net'] . "', '" . $net_type . "', $radius),\n", FILE_APPEND);
                 $i++;
             } else {
-                file_put_contents($this->beggar['DUMP'], "($j, '" . $start_ip . "', '" . $last_ip . "', '" . $net . "', '" . $net_type . "', $radius);\n", FILE_APPEND);
+                file_put_contents($this->beggar['DUMP'], "($j, '" . $io['start_ip'] . "', '" . $io['last_ip'] . "', '" . $io['net'] . "', '" . $net_type . "', $radius);\n", FILE_APPEND);
             }
         }
         fpc_end($this->beggar['DUMP'], "networks");
 
 //create table nethosts	
         $i = $this->initIncrement();
-        $net_id = $this->get_netid($user_arr, $this->netsData);
+//        $net_id = $this->get_netid($user_arr, $this->netsData);
         fpc_start($this->beggar['DUMP'], "nethosts");
         foreach ($user_arr as $each_user => $io) {
-
             $login = $io[$this->loginPoint];
             $ip = $io[$this->ipPoint];
             $mac = strtolower($io[$this->macPoint]);
             $id = $io[$this->beggar['INF']['id']];
-            if ($i < ($user_count - 1)) {
-                if (!isset($net_id[$id])) {
-                    //echo $login . '<br />';
-                } else {
-                    file_put_contents($this->beggar['DUMP'], "($id, $net_id[$id], '" . $ip . "', '" . $mac . "', 'NULL'),\n", FILE_APPEND);
+
+            $netid = false;
+            $users_net_id = false;
+
+            foreach ($this->netsData as $netid => $eachNet) {
+                if ($this->cidr_match($ip, $eachNet['net']) === true) {
+                    $users_net_id = $netid + 1;
+                    break;
                 }
+            }
+
+            if ($i < ($user_count - 1)) {
+                file_put_contents($this->beggar['DUMP'], "($id, $users_net_id, '" . $ip . "', '" . $mac . "', NULL),\n", FILE_APPEND);
                 $i++;
             } else {
-                if (!isset($net_id[$id])) {
-                    $net_id[$id] = 1;
-                }
-                file_put_contents($this->beggar['DUMP'], "($id, $net_id[$id], '" . $ip . "', '" . $mac . "', 'NULL'); \n", FILE_APPEND);
+                file_put_contents($this->beggar['DUMP'], "($id, $users_net_id, '" . $ip . "', '" . $mac . "', NULL); \n", FILE_APPEND);
             }
         }
         fpc_end($this->beggar['DUMP'], "nethosts");
@@ -898,6 +948,20 @@ class mikbill {
             }
         }
         fpc_end($this->beggar['DUMP'], "address");
+
+        $i = $this->initIncrement();
+        fpc_start($this->beggar['DUMP'], 'emails');
+        foreach ($user_arr as $each_user => $io) {
+
+            $j += $this->beggar['UDATA'];
+            if ($i < ($user_count - 1)) {
+                file_put_contents($this->beggar['DUMP'], "(NULL, '" . $io[$this->loginPoint] . "', NULL),\n", FILE_APPEND);
+                $i++;
+            } else {
+                file_put_contents($this->beggar['DUMP'], "(NULL, '" . $io[$this->loginPoint] . "', NULL);\n", FILE_APPEND);
+            }
+        }
+        fpc_end($this->beggar['DUMP'], "emails");
 
         return $duplicateIP;
     }
