@@ -348,10 +348,12 @@ class mikbill {
         $lines = explode("\n", $data);
         foreach ($lines as $eachLine) {
             $lineParts = explode(",", $eachLine);
-            if (isset($lineParts[3]) and trim($lineParts[3] != 'NULL')) {
-                $login = trim($lineParts[0]);
-                $mac = trim($lineParts[3]);
-                $this->macDictTmp[$login] = $mac;
+            if (isset($lineParts[3])) {
+                $mac = strtolower(trim($lineParts[3]));
+                if ($mac != 'null') {
+                    $login = trim($lineParts[0]);
+                    $this->macDictTmp[$login] = $mac;
+                }
             }
         }
     }
@@ -651,7 +653,7 @@ class mikbill {
                 $credit = $io['credit'];
                 $freeze = $io['freeze'];
                 $creditExpire = 0;
-                if($credit) {
+                if ($credit) {
                     $creditExpire = 1607983200;
                 }
                 if ($i < ($user_count - 1)) {
