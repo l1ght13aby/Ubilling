@@ -30,7 +30,13 @@ if ($altCfg['VLAN_MANAGEMENT_ENABLED']) {
             show_window('', wf_BackLink(VlanManagement::MODULE));
             show_window(__('Available switches'), $vlan->oltListShow());
         } else {
-            show_window('', wf_BackLink(VlanManagement::MODULE_ONU_APPLY));
+            $links = wf_BackLink(VlanManagement::MODULE_ONU_APPLY);
+            if ($routing->checkGet('force')) {
+                $links .= wf_Link(VlanManagement::MODULE_ONU_APPLY . "&oltid=" . $routing->get('oltid'), web_icon_extended() . __('Normal mode'), false, 'ubButton');
+            } else {
+                $links .= wf_Link(VlanManagement::MODULE_ONU_APPLY . "&oltid=" . $routing->get('oltid') . "&force=true", web_icon_extended() . __('No-cache mode'), false, 'ubButton');
+            }
+            show_window('', $links);
             if ($routing->checkGet('ajaxOnuList')) {
                 $change->onuListAjaxRender();
             }

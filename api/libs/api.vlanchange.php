@@ -7,6 +7,7 @@ class VlanChange {
 
     CONST MODULE_ONU_APPLY_AJAXONULIST = '?module=vlanmanagement_onu_apply&ajaxOnuList=true';
     CONST MODULE_ONU_APPLY_VLAN = '?module=vlanmanagement_onu_apply&apply_vlan=true';
+    CONST OLTPOLL_CACHE_PATH = 'exports/';
 
     /**
      * OLT ID
@@ -243,7 +244,7 @@ class VlanChange {
         $this->svlanDB = new NyanORM('qinq_svlan');
         $this->ponDB = new NyanORM('pononu');
         $this->realNameDB = new NyanORM('realname');
-        $this->usernameGuess($username);
+        $this->setUsername($username);
         if ($this->oltId) {
             $this->allModelsData = $this->switchModelsDB->getAll('id');
             $this->setSnmpTemplateFile();
@@ -261,7 +262,7 @@ class VlanChange {
      * 
      * @return void
      */
-    protected function usernameGuess($username) {
+    protected function setUsername($username) {
         if (!empty($username)) {
             $this->username = $username;
         } else {
@@ -269,7 +270,69 @@ class VlanChange {
                 $this->username = ubRouting::get('username', 'mres');
             } else {
                 if (ubRouting::checkGet('onuid')) {
-                    $this->getUsernameByOnu();
+                    $onuid = ubRouting::get('onuid', 'mres');
+                    $this->getUsernameByOnu($onuid);
+                }
+            }
+        }
+    }
+
+    /**
+     * Check if onu already exist and linked to some user
+     * 
+     * @param string $onuid
+     * @return string
+     */
+    /*
+     * 
+     * wtf is this shit
+     * 
+     * 
+     * 
+      protected function setUsernameByOnu($onuid = '') {
+      if (empty($onuid)) {
+      $onuid = ubRouting::get('onuid', 'mres');
+      }
+
+      if (!empty($this->allMac)) {
+      if (isset($this->allMac[$onuid])) {
+      if (!empty($this->allMac[$onuid]['login'])) {
+      $this->username = $this->allMac[$onuid]['login'];
+      return;
+      }
+      }
+      }
+      if (!empty($this->allSerial)) {
+      if (isset($this->allSerial[$onuid])) {
+      if (!empty($this->allMac[$onuid]['login'])) {
+      $this->username = $this->alLSerial[$onuid]['login'];
+      return;
+      }
+      }
+      }
+      }
+     * 
+     * 
+     */
+
+    /**
+     * Check if link onu->user exists and return login
+     * 
+     * @param type $onuid
+     * @return type
+     */
+    protected function getUsernameByONU($onuid) {
+        if (!empty($this->allMac)) {
+            if (isset($this->allMac[$onuid])) {
+                if (!empty($this->allMac[$onuid]['login'])) {
+                    return ($this->allMac[$onuid]['login']);
+                }
+            }
+        }
+        if (!empty($this->allSerial)) {
+            if (isset($this->allSerial[$onuid])) {
+                if (!empty($this->allMac[$onuid]['login'])) {
+                    return ($this->alLSerial[$onuid]['login']);
                 }
             }
         }
@@ -286,51 +349,14 @@ class VlanChange {
     }
 
     /**
-     * Check if onu already exist and linked to some user
-     * 
-     * @param string $onuid
-     * @param bool $check
-     * @return string
-     */
-    protected function getUsernameByOnu($onuid = '', $check = false) {
-        if (empty($onuid)) {
-            $onuid = ubRouting::get('onuid', 'mres');
-        }
-
-        if (!empty($this->allMac)) {
-            if (isset($this->allMac[$onuid])) {
-                if (!empty($this->allMac[$onuid]['login'])) {
-                    if (!$check) {
-                        $this->username = $this->allMac[$onuid]['login'];
-                    } else {
-                        return ($this->allMac[$onuid]['login']);
-                    }
-                }
-            }
-        } else {
-            if (!empty($data)) {
-                if (isset($this->allSerial[$onuid])) {
-                    if (!empty($this->allMac[$onuid]['login'])) {
-                        if (!$check) {
-                            $this->username = $this->alLSerial[$onuid]['login'];
-                        } else {
-                            return ($this->alLSerial[$onuid]['login']);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /**
      * Poll selected OLT is there is ONU with guest vlan
      * 
      * @return void
      */
-    public function checkOltGuestVlan() {
+    public function checkOltGuestVlan($force) {
         $this->setGuestVlans();
         $this->checkUserOnu();
-        $this->pollOlt();
+        $this->pollOlt($force);
     }
 
     /**
@@ -648,10 +674,11 @@ class VlanChange {
      * 
      * @return void
      */
-    protected function pollOlt() {
+    protected function pollOlt($force) {
+        $this->getOltPollCache();
         switch ($this->mode) {
             case 'bdcom_b':
-                $this->pollOltBdcom();
+                $this->pollOltBdcom($force);
                 break;
             default:
                 return ('');
@@ -663,78 +690,82 @@ class VlanChange {
      * 
      * @return void
      */
-    protected function pollOltBdcom() {
+    protected function pollOltBdcom($force = false) {
         $allOnuIndex = array();
         $interfaceIndex = array();
         $interfaceOltIndex = array();
-        //$allOnuPvid = array();
+        if (empty($this->cachedGuestOnus) OR $force) {
+            $this->guestOnus['pollTime'] = time();
 
-        $allOnuIndexRaw = $this->snmp->walk($this->oltIp, $this->oltCommunityRead, $this->snmpTemplate['vlan']['IFINDEX'], false);
-        $allOnuIndexRaw = trim($allOnuIndexRaw);
-        if (!empty($allOnuIndexRaw)) {
-            $allOnuIndexRows = explodeRows($allOnuIndexRaw);
-            foreach ($allOnuIndexRows as $eachRow) {
-                $eachRow = trim($eachRow);
-                $eachRowExplode = explode("=", $eachRow);
-                $oid = $eachRowExplode[0];
-                $oid = trim(str_replace($this->snmpTemplate['vlan']['IFINDEX'] . '.', '', $oid));
-                $mac = convertMACDec2Hex($oid);
-                $value = $eachRowExplode[1];
-                $value = trim(str_replace("INTEGER:", '', $value));
-                $allOnuIndex[$value] = $mac;
-            }
-
-            unset($value);
-            unset($oid);
-            unset($eachRow);
-            unset($eachRowExplode);
-
-            $interfaceIndexRaw = $this->snmp->walk($this->oltIp, $this->oltCommunityRead, $this->snmpTemplate['misc']['INTERFACEINDEX'], false);
-            $interfaceIndexRaw = trim($interfaceIndexRaw);
-            if (!empty($interfaceIndexRaw)) {
-                $interfaceIndexRows = explodeRows($interfaceIndexRaw);
-                foreach ($interfaceIndexRows as $eachRow) {
+            $allOnuIndexRaw = $this->snmp->walk($this->oltIp, $this->oltCommunityRead, $this->snmpTemplate['vlan']['IFINDEX'], false);
+            $allOnuIndexRaw = trim($allOnuIndexRaw);
+            if (!empty($allOnuIndexRaw)) {
+                $allOnuIndexRows = explodeRows($allOnuIndexRaw);
+                foreach ($allOnuIndexRows as $eachRow) {
                     $eachRow = trim($eachRow);
                     $eachRowExplode = explode("=", $eachRow);
-                    $oidRaw = $eachRowExplode[0];
-                    $oid = trim(str_replace($this->snmpTemplate['misc']['INTERFACEINDEX'] . ".", '', $oidRaw));
-                    $valueRaw = $eachRowExplode[1];
-                    $value = trim(str_replace("STRING:", '', $valueRaw));
-                    $interfaceIndex[$oid] = $value;
-                    $valueExplode = explode(":", $value);
-                    $interfaceOltIndex[$oid] = $valueExplode[0];
-                }
-            }
-
-            unset($value);
-            unset($oid);
-            unset($eachRow);
-            unset($eachRowExplode);
-
-            $allOnuPvidRaw = $this->snmp->walk($this->oltIp, $this->oltCommunityRead, $this->snmpTemplate['vlan']['PVID'], false);
-            $allOnuPvidRaw = trim($allOnuPvidRaw);
-            if (!empty($allOnuPvidRaw)) {
-                $allOnuPvidRows = explodeRows($allOnuPvidRaw);
-                foreach ($allOnuPvidRows as $eachRow) {
-                    $eachRow = trim($eachRow);
-                    $eachRowExplode = explode("=", $eachRow);
-                    $oidRaw = $eachRowExplode[0];
-                    $oidRaw = trim(str_replace($this->snmpTemplate['vlan']['PVID'] . ".", '', $oidRaw));
-                    $oidRawExplode = explode(".", $oidRaw);
-                    $onuId = trim($oidRawExplode[0]);
-                    $portNumber = trim($oidRawExplode[1]);
+                    $oid = $eachRowExplode[0];
+                    $oid = trim(str_replace($this->snmpTemplate['vlan']['IFINDEX'] . '.', '', $oid));
+                    $mac = convertMACDec2Hex($oid);
                     $value = $eachRowExplode[1];
                     $value = trim(str_replace("INTEGER:", '', $value));
-                    foreach ($this->guestVlans as $eachGuest) {
-                        if ($eachGuest == $value) {
-                            if (isset($allOnuIndex[$onuId])) {
-                                //$allOnuPvid[$onuId][$portNumber] = $value;
-                                $this->guestOnus[$allOnuIndex[$onuId]] = array('id' => $allOnuIndex[$onuId], 'port' => $portNumber, 'vlan' => $value, 'interface' => $interfaceIndex[$onuId], 'interface_olt' => $interfaceOltIndex[$onuId], 'type' => 'epon', 'snmp_index' => $onuId);
+                    $allOnuIndex[$value] = $mac;
+                }
+
+                unset($value);
+                unset($oid);
+                unset($eachRow);
+                unset($eachRowExplode);
+
+                $interfaceIndexRaw = $this->snmp->walk($this->oltIp, $this->oltCommunityRead, $this->snmpTemplate['misc']['INTERFACEINDEX'], false);
+                $interfaceIndexRaw = trim($interfaceIndexRaw);
+                if (!empty($interfaceIndexRaw)) {
+                    $interfaceIndexRows = explodeRows($interfaceIndexRaw);
+                    foreach ($interfaceIndexRows as $eachRow) {
+                        $eachRow = trim($eachRow);
+                        $eachRowExplode = explode("=", $eachRow);
+                        $oidRaw = $eachRowExplode[0];
+                        $oid = trim(str_replace($this->snmpTemplate['misc']['INTERFACEINDEX'] . ".", '', $oidRaw));
+                        $valueRaw = $eachRowExplode[1];
+                        $value = trim(str_replace("STRING:", '', $valueRaw));
+                        $interfaceIndex[$oid] = $value;
+                        $valueExplode = explode(":", $value);
+                        $interfaceOltIndex[$oid] = $valueExplode[0];
+                    }
+                }
+
+                unset($value);
+                unset($oid);
+                unset($eachRow);
+                unset($eachRowExplode);
+
+                $allOnuPvidRaw = $this->snmp->walk($this->oltIp, $this->oltCommunityRead, $this->snmpTemplate['vlan']['PVID'], false);
+                $allOnuPvidRaw = trim($allOnuPvidRaw);
+                if (!empty($allOnuPvidRaw)) {
+                    $allOnuPvidRows = explodeRows($allOnuPvidRaw);
+                    foreach ($allOnuPvidRows as $eachRow) {
+                        $eachRow = trim($eachRow);
+                        $eachRowExplode = explode("=", $eachRow);
+                        $oidRaw = $eachRowExplode[0];
+                        $oidRaw = trim(str_replace($this->snmpTemplate['vlan']['PVID'] . ".", '', $oidRaw));
+                        $oidRawExplode = explode(".", $oidRaw);
+                        $onuId = trim($oidRawExplode[0]);
+                        $portNumber = trim($oidRawExplode[1]);
+                        $value = $eachRowExplode[1];
+                        $value = trim(str_replace("INTEGER:", '', $value));
+                        foreach ($this->guestVlans as $eachGuest) {
+                            if ($eachGuest == $value) {
+                                if (isset($allOnuIndex[$onuId])) {
+                                    $this->guestOnus['data'][$allOnuIndex[$onuId]] = array('id' => $allOnuIndex[$onuId], 'port' => $portNumber, 'vlan' => $value, 'interface' => $interfaceIndex[$onuId], 'interface_olt' => $interfaceOltIndex[$onuId], 'type' => 'epon', 'snmp_index' => $onuId);
+                                }
                             }
                         }
                     }
                 }
             }
+            $this->saveOltPollCache();
+        } else {
+            $this->guestOnus = $this->cachedGuestOnus;
         }
     }
 
@@ -749,6 +780,9 @@ class VlanChange {
         if (ubRouting::checkGet('username')) {
             $add .= "&username=" . $this->username;
         }
+        if (ubRouting::checkGet('force')) {
+            $add .= "&force=true";
+        }
         $columns = array('Interface', 'MAC/Serial', 'Port', 'VLAN', 'Real Name', 'Actions');
         $opts = '"order": [[ 0, "asc" ]]';
         $result .= wf_JqDtLoader($columns, self::MODULE_ONU_APPLY_AJAXONULIST . $add, false, __('Request'), 100, $opts);
@@ -762,43 +796,54 @@ class VlanChange {
      * @return string
      */
     public function onuListAjaxRender() {
+        $force = false;
         $json = new wf_JqDtHelper();
-        $this->checkOltGuestVlan();
-
+        if (ubRouting::checkGet('force')) {
+            $force = true;
+        }
+        $this->checkOltGuestVlan($force);
         $currentUsername = $this->username;
 
         if (!empty($this->guestOnus)) {
-            foreach ($this->guestOnus as $each) {
-                if (ubRouting::checkGet('username')) {
-                    $this->$currentUsername = ubRouting::get('username', 'mres');
-                    $this->username = ubRouting::get('username', 'mres');
-                }
-                $altUsername = $this->getUsernameByOnu($each['id'], true);
-                if (!$currentUsername) {
-                    $this->getUsernameByOnu($each['id']);
-                    $currentUsername = $altUsername;
-                }
-                if ($currentUsername) {
-                    $controls = wf_modalAuto(wf_img_sized('skins/add_icon.png', '', '16', '16'), __('Assign VLAN'), $this->changeVlanForm($each['id'], $each['port'], $each['vlan'], $each['type'], $each['interface'], $each['interface_olt'], $each['snmp_index']));
-                } else {
-                    $controls = wf_modalAuto(wf_img_sized('skins/add_icon.png', '', '16', '16'), __('Assign VLAN'), $this->userNameForm($each['id'], $each['port'], $each['vlan'], $each['type'], $each['interface'], $each['interface_olt'], $each['snmp_index']));
-                }
-                $data[] = trim($each['interface']);
-                $data[] = trim($each['id']);
-                $data[] = trim($each['port']);
-                $data[] = trim($each['vlan']);
-                $data[] = wf_link('?module=userprofile&username=', trim(@$this->allRealnames[$altUsername]['realname']));
-                $data[] = $controls;
-                $json->addRow($data);
+            if (isset($this->guestOnus['data'])) {
+                $onuData = $this->guestOnus['data'];
+                foreach ($onuData as $each) {
+                    if (ubRouting::checkGet('username')) {
+                        $this->$currentUsername = ubRouting::get('username', 'mres');
+                        $this->username = ubRouting::get('username', 'mres');
+                    }
+                    $altUsername = $this->getUsernameByOnu($each['id']);
+                    if (!$currentUsername) {
+                        $this->username = $altUsername;
+                        $currentUsername = $altUsername;
+                    }
+                    if ($currentUsername) {
+                        $controls = wf_modalAuto(wf_img_sized('skins/add_icon.png', '', '16', '16'), __('Assign VLAN'), $this->changeVlanForm($each));
+                    } else {
+                        $controls = wf_modalAuto(wf_img_sized('skins/add_icon.png', '', '16', '16'), __('Assign VLAN'), $this->userNameForm($each));
+                    }
+                    $data[] = trim($each['interface']);
+                    $data[] = trim($each['id']);
+                    $data[] = trim($each['port']);
+                    $data[] = trim($each['vlan']);
+                    $data[] = wf_link('?module=userprofile&username=', trim(@$this->allRealnames[$altUsername]['realname']));
+                    $data[] = $controls;
+                    $json->addRow($data);
 
-                $currentUsername = '';
-                unset($data);
+                    $currentUsername = '';
+                    unset($data);
+                }
             }
         }
 
         $json->getJson();
     }
 
+    /**
+     * Selector for ONU models
+     * 
+     * @return string
+     */
     protected function onuModelsSelector() {
         $models = array();
         if (!empty($this->allModelsData)) {
@@ -820,7 +865,14 @@ class VlanChange {
      *
      * @return string
      */
-    protected function userNameForm($onuId, $port, $vlan, $type, $interface, $interface_olt, $snmp_index) {
+    protected function userNameForm($data) {
+        $onuId = $data['id'];
+        $port = $data['port'];
+        $vlan = $data['vlan'];
+        $type = $data['type'];
+        $interface = $data['interface'];
+        $interface_olt = $data['interface_olt'];
+        $snmp_index = $data['snmp_index'];
         $result = '';
         $inputs = wf_TextInput('username', __('Login'), '', true, 20, '', '', 'usernameInput---' . ubRouting::get('oltid', 'mres') . '---' . $onuId . '---' . $port);
         $inputs .= wf_Submit(__('Validate'));
@@ -841,7 +893,14 @@ class VlanChange {
      * 
      * @return string
      */
-    public function changeVlanForm($onuId, $port, $vlan, $type, $interface, $interface_olt, $snmp_index) {
+    public function changeVlanForm($data) {
+        $onuId = $data['id'];
+        $port = $data['port'];
+        $vlan = $data['vlan'];
+        $type = $data['type'];
+        $interface = $data['interface'];
+        $interface_olt = $data['interface_olt'];
+        $snmp_index = $data['snmp_index'];
         $result = '';
         $oltDetails = $this->loadOltDetails();
         $this->clearInterface($interface_olt);
@@ -861,7 +920,7 @@ class VlanChange {
         $cells = wf_TableCell(__('Login'));
         $cells .= wf_TableCell(wf_TextInput('username', '', $this->username, false, 20));
         $rows = wf_TableRow($cells);
-        $checkedUsername = $this->getUsernameByOnu($onuId, true);
+        $checkedUsername = $this->getUsernameByOnu($onuId);
         if (!empty($checkedUsername)) {
             if ($this->username != $checkedUsername) {
                 $rows .= 'this onu is assigned to another user: ' . wf_Link('?module=userprofile&username=' . $checkedUsername, $checkedUsername);
@@ -872,6 +931,9 @@ class VlanChange {
         $rows .= wf_TableRow($cells);
         $cells = wf_TableCell(__('Model'));
         $cells .= wf_tableCell(wf_Selector('onumodelid', $models, '', '', ''));
+        $rows .= wf_TableRow($cells);
+        $cells = wf_TableCell(__('Add ONU to PONizer'));
+        $cells .= wf_TableCell(wf_CheckInput('ponizer_add', '', false, true));
         $rows .= wf_TableRow($cells);
         if ($this->cvlan) {
             if (!empty($this->universalAssign)) {
@@ -948,11 +1010,15 @@ class VlanChange {
         $setData[] = $saveData;
         @$this->snmp->set($this->oltIp, $this->oltCommunityWrite, $setData);
 
+        $this->invalidateOltPollCacheEntry(ubRouting::post('onuid', 'mres'));
+
         rcms_redirect(VlanManagement::MODULE_ONU_APPLY . '&oltid=' . ubRouting::get('oltid', 'mres'));
     }
 
     protected function routineAdd() {
-        $this->ponizerRoutineAdd();
+        if (ubRouting::checkPost('ponizer_add')) {
+            $this->ponizerRoutineAdd();
+        }
         $this->universalRoutineAdd();
     }
 
@@ -962,10 +1028,10 @@ class VlanChange {
         $oltid = ubRouting::post('oltid', 'mres');
         $login = ubRouting::post('username', 'mres');
         $onumodelid = ubRouting::post('onumodelid', 'mres');
-        if (!isset($this->onuMac[$onuid])) {
+        if (!isset($this->allMac[$onuid])) {
             $this->ponizerAdd($type, $oltid, $onumodelid, $onuid, $login);
         } else {
-            if ($this->onuMac[$onuid]['oltid'] !== $oltid) {
+            if ($this->allMac[$onuid]['oltid'] !== $oltid) {
                 $this->ponizerFixOlt($type, $oltid, $onumodelid, $onuid, $login);
             }
         }
@@ -999,6 +1065,35 @@ class VlanChange {
             $this->cvlanDB->data('cvlan', $cvlan);
             $this->cvlanDB->create();
             $universal->logAdd($login, $svlan, $cvlan);
+        }
+    }
+
+    protected function getOltPollCache() {
+        if (file_exists(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache')) {
+            $curTime = time();
+            $serial = file_get_contents(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache');
+            $raw = unserialize($serial);
+            $timeDiff = $raw['pollTime'] - $curTime;
+            if ($timeDiff > -600) {
+                $this->cachedGuestOnus = $raw;
+            } else {
+                unlink(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache');
+            }
+        }
+    }
+
+    protected function saveOltPollCache() {
+        $serial = serialize($this->guestOnus);
+        file_put_contents(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache', $serial);
+    }
+
+    protected function invalidateOltPollCacheEntry($onuid) {
+        if (file_exists(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache')) {
+            $raw = file_get_contents(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache');
+            $data = unserialize($raw);
+            unset($data['data'][$onuid]);
+            $serial = serialize($data);
+            file_put_contents(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache', $serial);
         }
     }
 
