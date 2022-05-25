@@ -675,7 +675,7 @@ class VlanChange {
      * @return void
      */
     protected function pollOlt($force) {
-        $this->getOltPollCache();
+        $this->loadOltPollCache();
         switch ($this->mode) {
             case 'bdcom_b':
                 $this->pollOltBdcom($force);
@@ -1068,7 +1068,7 @@ class VlanChange {
         }
     }
 
-    protected function getOltPollCache() {
+    protected function loadOltPollCache() {
         if (file_exists(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache')) {
             $curTime = time();
             $serial = file_get_contents(self::OLTPOLL_CACHE_PATH . $this->oltId . '_vmng_cache');
